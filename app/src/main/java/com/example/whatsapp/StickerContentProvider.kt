@@ -24,25 +24,24 @@ class StickerContentProvider : ContentProvider() {
         private const val STICKERS = 3
         private const val STICKERS_ASSET = 4
 
-        // Metadata Columns
+        // Exact WhatsApp Metadata Query Column Names
         private const val STICKER_PACK_IDENTIFIER = "sticker_pack_identifier"
         private const val STICKER_PACK_NAME = "sticker_pack_name"
         private const val STICKER_PACK_PUBLISHER = "sticker_pack_publisher"
         private const val STICKER_PACK_ICON = "sticker_pack_icon"
         private const val ANDROID_APP_DOWNLOAD_LINK = "android_play_store_link"
         private const val IOS_APP_DOWNLOAD_LINK = "ios_app_download_link"
-        private const val PUBLISHER_EMAIL = "publisher_email"
-        private const val PUBLISHER_WEBSITE = "publisher_website"
-        private const val PRIVACY_POLICY_WEBSITE = "privacy_policy_website"
-        private const val LICENSE_AGREEMENT_WEBSITE = "license_agreement_website"
+        private const val PUBLISHER_EMAIL = "sticker_pack_publisher_email"
+        private const val PUBLISHER_WEBSITE = "sticker_pack_publisher_website"
+        private const val PRIVACY_POLICY_WEBSITE = "sticker_pack_privacy_policy_website"
+        private const val LICENSE_AGREEMENT_WEBSITE = "sticker_pack_license_agreement_website"
         private const val IMAGE_DATA_VERSION = "image_data_version"
         private const val AVOID_CACHE = "avoid_cache"
         private const val ANIMATED_STICKER_PACK = "animated_sticker_pack"
 
-        // Sticker Columns
+        // Exact WhatsApp Individual Sticker Query Column Names
         private const val STICKER_FILE_NAME = "sticker_file_name"
-        private const val STICKER_PACK_ANIMATION_DATA = "sticker_pack_animation_data"
-        private const val STICKER_PACK_EMOJIS = "sticker_pack_emojis"
+        private const val STICKER_FILE_EMOJI = "sticker_emoji"
 
         private val MATCHER = UriMatcher(UriMatcher.NO_MATCH)
 
@@ -91,7 +90,6 @@ class StickerContentProvider : ContentProvider() {
                     )
                 )
 
-                // Only expose pack if it has stickers
                 if (packInfo.stickers.isNotEmpty()) {
                     cursor.addRow(
                         arrayOf(
@@ -101,13 +99,13 @@ class StickerContentProvider : ContentProvider() {
                             packInfo.trayFileName,
                             "", // android download link
                             "", // ios download link
-                            "support@stickerdrop.app",
-                            "https://github.com",
-                            "https://github.com/privacy",
-                            "https://github.com/license",
-                            "1",
+                            "support@makeurfun.com",
+                            "https://makeurfun.com",
+                            "https://makeurfun.com/privacy",
+                            "https://makeurfun.com/license",
+                            "1", // image data version
                             0, // avoid cache
-                            if (packInfo.isAnimated) 1 else 0
+                            0  // animated_sticker_pack: 0 ensures universal WhatsApp compatibility
                         )
                     )
                 }
@@ -142,13 +140,13 @@ class StickerContentProvider : ContentProvider() {
                             packInfo.trayFileName,
                             "",
                             "",
-                            "support@stickerdrop.app",
-                            "https://github.com",
-                            "https://github.com/privacy",
-                            "https://github.com/license",
+                            "support@makeurfun.com",
+                            "https://makeurfun.com",
+                            "https://makeurfun.com/privacy",
+                            "https://makeurfun.com/license",
                             "1",
                             0,
-                            if (packInfo.isAnimated) 1 else 0
+                            0
                         )
                     )
                 }
@@ -160,17 +158,21 @@ class StickerContentProvider : ContentProvider() {
                 val cursor = MatrixCursor(
                     arrayOf(
                         STICKER_FILE_NAME,
-                        STICKER_PACK_ANIMATION_DATA,
-                        STICKER_PACK_EMOJIS
+                        STICKER_FILE_EMOJI
                     )
                 )
                 if (packInfo.id == packId) {
                     val effectiveStickers = StickerManager.getEffectiveWhatsAppStickers(ctx)
                     for (sticker in effectiveStickers) {
+                        // WhatsApp requires file name to end in .webp
+                        val webpFileName = if (sticker.fileName.endsWith(".webp", ignoreCase = true)) {
+                            sticker.fileName
+                        } else {
+                            sticker.fileName.substringBeforeLast(".") + ".webp"
+                        }
                         cursor.addRow(
                             arrayOf(
-                                sticker.fileName,
-                                "", // animation data
+                                webpFileName,
                                 sticker.emojis.joinToString(",")
                             )
                         )
@@ -190,7 +192,6 @@ class StickerContentProvider : ContentProvider() {
         }
 
         val segments = uri.pathSegments
-        // URI format: /stickers_asset/<pack_id>/<file_name>
         if (segments.size < 3) {
             throw IllegalArgumentException("Invalid path segments: $uri")
         }
@@ -209,6 +210,11 @@ class StickerContentProvider : ContentProvider() {
         return AssetFileDescriptor(pfd, 0, AssetFileDescriptor.UNKNOWN_LENGTH)
     }
 
+    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
+        val afd = openAssetFile(uri, mode)
+        return afd?.parcelFileDescriptor
+    }
+
     override fun getType(uri: Uri): String? {
         val code = MATCHER.match(uri)
         val authority = context?.packageName + ".stickercontentprovider"
@@ -216,7 +222,14 @@ class StickerContentProvider : ContentProvider() {
             METADATA -> "vnd.android.cursor.dir/vnd.$authority.metadata"
             METADATA_PACK -> "vnd.android.cursor.item/vnd.$authority.metadata"
             STICKERS -> "vnd.android.cursor.dir/vnd.$authority.stickers"
-            STICKERS_ASSET -> "image/webp"
+            STICKERS_ASSET -> {
+                val fileName = uri.lastPathSegment ?: ""
+                if (fileName.endsWith(".png", ignoreCase = true)) {
+                    "image/png"
+                } else {
+                    "image/webp"
+                }
+            }
             else -> null
         }
     }
