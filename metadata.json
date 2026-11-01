@@ -1,0 +1,6 @@
+{
+  "name": "StickerDrop",
+  "description": "Instant animated GIF and sticker transfer to WhatsApp sticker packs and Instagram stories.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
