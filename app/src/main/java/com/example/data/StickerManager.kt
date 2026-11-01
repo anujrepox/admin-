@@ -26,7 +26,7 @@ object StickerManager {
     private const val KEY_PACK_DATA = "pack_data"
 
     // WhatsApp strict limits
-    const val MAX_STATIC_STICKER_BYTES = 98 * 1024 // Strict 98 KB (WhatsApp limit is 100 KB)
+    const val MAX_STATIC_STICKER_BYTES = 95 * 1024 // Strict 95 KB (WhatsApp ceiling is 100 KB)
     const val STICKER_CANVAS_SIZE = 512
     const val TRAY_CANVAS_SIZE = 96
 
@@ -238,49 +238,67 @@ object StickerManager {
     }
 
     /**
-     * Resizes, pads, and compresses image into strictly compliant 512x512 WebP (< 98 KB)
+     * Resizes, pads, and compresses image into strictly compliant 512x512 WebP (< 95 KB)
      */
     private fun formatBytesToCompliant512Webp(inputBytes: ByteArray, outputFile: File) {
         val srcBitmap = BitmapFactory.decodeByteArray(inputBytes, 0, inputBytes.size)
             ?: throw IllegalArgumentException("Could not decode image")
 
         val targetSize = STICKER_CANVAS_SIZE // 512
-        val scaledBitmap = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(scaledBitmap)
+        var finalBytes: ByteArray = ByteArray(0)
 
-        // Leave a 16px transparent margin inside 512x512 as recommended by WhatsApp
-        val contentMax = targetSize - 32 // 480
-        val srcWidth = srcBitmap.width
-        val srcHeight = srcBitmap.height
-        val scale = (contentMax.toFloat() / maxOf(srcWidth, srcHeight)).coerceAtMost(1.0f)
-        val destWidth = (srcWidth * scale).toInt()
-        val destHeight = (srcHeight * scale).toInt()
-        val left = (targetSize - destWidth) / 2
-        val top = (targetSize - destHeight) / 2
+        // Try different content scales if image has very high detail/entropy
+        val maxContentOptions = intArrayOf(targetSize - 32, 420, 360, 300)
 
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        val srcRect = android.graphics.Rect(0, 0, srcWidth, srcHeight)
-        val destRect = android.graphics.Rect(left, top, left + destWidth, top + destHeight)
-        canvas.drawBitmap(srcBitmap, srcRect, destRect, paint)
+        scaleLoop@ for (currContentMax in maxContentOptions) {
+            val scaledBitmap = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(scaledBitmap)
 
-        // Compress iteratively to guarantee under MAX_STATIC_STICKER_BYTES (98 KB)
-        var quality = 85
-        var finalBytes: ByteArray
-        do {
-            val stream = ByteArrayOutputStream()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                scaledBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, stream)
-            } else {
-                @Suppress("DEPRECATION")
-                scaledBitmap.compress(Bitmap.CompressFormat.WEBP, quality, stream)
+            val srcWidth = srcBitmap.width
+            val srcHeight = srcBitmap.height
+            val scale = (currContentMax.toFloat() / maxOf(srcWidth, srcHeight)).coerceAtMost(1.0f)
+            val destWidth = (srcWidth * scale).toInt().coerceAtLeast(1)
+            val destHeight = (srcHeight * scale).toInt().coerceAtLeast(1)
+            val left = (targetSize - destWidth) / 2
+            val top = (targetSize - destHeight) / 2
+
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            val srcRect = android.graphics.Rect(0, 0, srcWidth, srcHeight)
+            val destRect = android.graphics.Rect(left, top, left + destWidth, top + destHeight)
+            canvas.drawBitmap(srcBitmap, srcRect, destRect, paint)
+
+            val qualities = intArrayOf(85, 75, 60, 45, 30, 20, 10)
+            for (q in qualities) {
+                val stream = ByteArrayOutputStream()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    scaledBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, q, stream)
+                } else {
+                    @Suppress("DEPRECATION")
+                    scaledBitmap.compress(Bitmap.CompressFormat.WEBP, q, stream)
+                }
+                val candidate = stream.toByteArray()
+                if (candidate.size <= MAX_STATIC_STICKER_BYTES) {
+                    finalBytes = candidate
+                    scaledBitmap.recycle()
+                    break@scaleLoop
+                }
+                finalBytes = candidate
             }
-            finalBytes = stream.toByteArray()
-            quality -= 8
-        } while (finalBytes.size > MAX_STATIC_STICKER_BYTES && quality >= 30)
+            scaledBitmap.recycle()
+        }
 
-        outputFile.writeBytes(finalBytes)
-        scaledBitmap.recycle()
         srcBitmap.recycle()
+
+        if (finalBytes.isEmpty()) {
+            throw IllegalStateException("Failed to compress image into WebP")
+        }
+
+        val tempFile = File.createTempFile("sticker_comp_", ".webp", outputFile.parentFile)
+        tempFile.writeBytes(finalBytes)
+        if (outputFile.exists()) {
+            outputFile.delete()
+        }
+        tempFile.renameTo(outputFile)
     }
 
     fun formatFileTo512Webp(sourceFile: File, outputFile: File) {
@@ -324,9 +342,12 @@ object StickerManager {
             canvas.drawText("⚡", 48f, 60f, innerPaint)
         }
 
-        FileOutputStream(trayFile).use { out ->
+        val tempFile = File.createTempFile("tray_comp_", ".png", trayFile.parentFile)
+        FileOutputStream(tempFile).use { out ->
             trayBitmap.compress(Bitmap.CompressFormat.PNG, 95, out)
         }
+        if (trayFile.exists()) trayFile.delete()
+        tempFile.renameTo(trayFile)
         trayBitmap.recycle()
     }
 

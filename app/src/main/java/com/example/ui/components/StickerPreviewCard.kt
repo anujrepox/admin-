@@ -141,6 +141,7 @@ fun StickerPreviewCard(
             Spacer(modifier = Modifier.height(14.dp))
 
             // Spec Pills
+            val isWithinLimit = sticker.sizeBytes <= 98 * 1024
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -158,9 +159,9 @@ fun StickerPreviewCard(
                 )
 
                 TagPill(
-                    text = sticker.formattedSize,
-                    backgroundColor = Color(0xFF161A26),
-                    textColor = Color(0xFFA5B0C7)
+                    text = if (isWithinLimit) "${sticker.formattedSize} (WhatsApp OK)" else "${sticker.formattedSize} (Optimizing...)",
+                    backgroundColor = if (isWithinLimit) Color(0xFF122820) else Color(0xFF2E1A1A),
+                    textColor = if (isWithinLimit) WhatsAppGreen else Color(0xFFFF6E6E)
                 )
             }
 
@@ -184,7 +185,7 @@ fun StickerPreviewCard(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Ready for WhatsApp Pack & Instagram Stories",
+                    text = "WhatsApp & Instagram Verified (512×512 WebP • <100 KB)",
                     color = Color(0xFFD2D8E6),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold

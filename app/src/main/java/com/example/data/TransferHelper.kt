@@ -45,15 +45,34 @@ object TransferHelper {
      */
     fun createAddToWhatsAppIntent(context: Context, packId: String, packName: String): Intent {
         val authority = "${context.packageName}.stickercontentprovider"
+        val targetPkg = if (isAppInstalled(context, PACKAGE_WHATSAPP)) {
+            PACKAGE_WHATSAPP
+        } else if (isAppInstalled(context, PACKAGE_WHATSAPP_BUSINESS)) {
+            PACKAGE_WHATSAPP_BUSINESS
+        } else null
+
+        // Explicitly grant read permission to WhatsApp for the content provider
+        if (targetPkg != null) {
+            try {
+                val providerUri = Uri.parse("content://$authority")
+                context.grantUriPermission(targetPkg, providerUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val packUri = Uri.parse("content://$authority/stickers/$packId")
+                context.grantUriPermission(targetPkg, packUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val assetUri = Uri.parse("content://$authority/stickers_asset/$packId")
+                context.grantUriPermission(targetPkg, assetUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not grant explicit URI permissions: ${e.message}")
+            }
+        }
+
         return Intent().apply {
             action = ACTION_ENABLE_STICKER_PACK
             putExtra(EXTRA_STICKER_PACK_ID, packId)
             putExtra(EXTRA_STICKER_PACK_AUTHORITY, authority)
             putExtra(EXTRA_STICKER_PACK_NAME, packName)
-            if (isAppInstalled(context, PACKAGE_WHATSAPP)) {
-                setPackage(PACKAGE_WHATSAPP)
-            } else if (isAppInstalled(context, PACKAGE_WHATSAPP_BUSINESS)) {
-                setPackage(PACKAGE_WHATSAPP_BUSINESS)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            if (targetPkg != null) {
+                setPackage(targetPkg)
             }
         }
     }

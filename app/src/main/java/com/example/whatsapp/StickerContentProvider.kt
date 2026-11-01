@@ -50,12 +50,15 @@ class StickerContentProvider : ContentProvider() {
             MATCHER.addURI(authority, "metadata/*", METADATA_PACK)
             MATCHER.addURI(authority, "stickers/*", STICKERS)
             MATCHER.addURI(authority, "stickers_asset/*/*", STICKERS_ASSET)
+            MATCHER.addURI(authority, "stickers_asset/*", STICKERS_ASSET)
         }
     }
 
     override fun onCreate(): Boolean {
-        val authority = context?.packageName + ".stickercontentprovider"
+        val authority = (context?.packageName ?: "com.aistudio.stickerdrop.vqzr") + ".stickercontentprovider"
         setupMatcher(authority)
+        // Also add the hardcoded build applicationId for safety
+        setupMatcher("com.aistudio.stickerdrop.vqzr.stickercontentprovider")
         return true
     }
 
@@ -67,11 +70,16 @@ class StickerContentProvider : ContentProvider() {
         sortOrder: String?
     ): Cursor? {
         val code = MATCHER.match(uri)
+        val path = uri.path ?: ""
         val ctx = context ?: return null
         val packInfo = StickerManager.getPackInfo(ctx)
 
-        return when (code) {
-            METADATA -> {
+        val isMetadata = code == METADATA || path.endsWith("/metadata") || path == "/metadata"
+        val isMetadataPack = code == METADATA_PACK || path.startsWith("/metadata/")
+        val isStickers = code == STICKERS || (path.startsWith("/stickers/") && !path.contains("stickers_asset"))
+
+        return when {
+            isMetadata || isMetadataPack -> {
                 val cursor = MatrixCursor(
                     arrayOf(
                         STICKER_PACK_IDENTIFIER,
@@ -105,79 +113,37 @@ class StickerContentProvider : ContentProvider() {
                             "https://makeurfun.com/license",
                             "1", // image data version
                             0, // avoid cache
-                            0  // animated_sticker_pack: 0 ensures universal WhatsApp compatibility
+                            0  // static sticker pack ensures universal WhatsApp acceptance
                         )
                     )
                 }
                 cursor
             }
 
-            METADATA_PACK -> {
-                val packId = uri.lastPathSegment
-                val cursor = MatrixCursor(
-                    arrayOf(
-                        STICKER_PACK_IDENTIFIER,
-                        STICKER_PACK_NAME,
-                        STICKER_PACK_PUBLISHER,
-                        STICKER_PACK_ICON,
-                        ANDROID_APP_DOWNLOAD_LINK,
-                        IOS_APP_DOWNLOAD_LINK,
-                        PUBLISHER_EMAIL,
-                        PUBLISHER_WEBSITE,
-                        PRIVACY_POLICY_WEBSITE,
-                        LICENSE_AGREEMENT_WEBSITE,
-                        IMAGE_DATA_VERSION,
-                        AVOID_CACHE,
-                        ANIMATED_STICKER_PACK
-                    )
-                )
-                if (packInfo.id == packId && packInfo.stickers.isNotEmpty()) {
-                    cursor.addRow(
-                        arrayOf(
-                            packInfo.id,
-                            packInfo.name,
-                            packInfo.publisher,
-                            packInfo.trayFileName,
-                            "",
-                            "",
-                            "support@makeurfun.com",
-                            "https://makeurfun.com",
-                            "https://makeurfun.com/privacy",
-                            "https://makeurfun.com/license",
-                            "1",
-                            0,
-                            0
-                        )
-                    )
-                }
-                cursor
-            }
-
-            STICKERS -> {
-                val packId = uri.lastPathSegment
+            isStickers -> {
                 val cursor = MatrixCursor(
                     arrayOf(
                         STICKER_FILE_NAME,
                         STICKER_FILE_EMOJI
                     )
                 )
-                if (packInfo.id == packId) {
-                    val effectiveStickers = StickerManager.getEffectiveWhatsAppStickers(ctx)
-                    for (sticker in effectiveStickers) {
-                        // WhatsApp requires file name to end in .webp
-                        val webpFileName = if (sticker.fileName.endsWith(".webp", ignoreCase = true)) {
-                            sticker.fileName
-                        } else {
-                            sticker.fileName.substringBeforeLast(".") + ".webp"
-                        }
-                        cursor.addRow(
-                            arrayOf(
-                                webpFileName,
-                                sticker.emojis.joinToString(",")
-                            )
-                        )
+                val effectiveStickers = StickerManager.getEffectiveWhatsAppStickers(ctx)
+                for (sticker in effectiveStickers) {
+                    val webpFileName = if (sticker.fileName.endsWith(".webp", ignoreCase = true)) {
+                        sticker.fileName
+                    } else {
+                        sticker.fileName.substringBeforeLast(".") + ".webp"
                     }
+                    // WhatsApp restricts maximum 3 emojis per sticker
+                    val emojiString = sticker.emojis.take(3).joinToString(",")
+                    cursor.addRow(
+                        arrayOf(
+                            webpFileName,
+                            emojiString
+                        )
+                    )
                 }
+                cursor.setNotificationUri(ctx.contentResolver, uri)
                 cursor
             }
 
@@ -186,28 +152,27 @@ class StickerContentProvider : ContentProvider() {
     }
 
     override fun openAssetFile(uri: Uri, mode: String): AssetFileDescriptor? {
-        val code = MATCHER.match(uri)
-        if (code != STICKERS_ASSET) {
-            throw IllegalArgumentException("Invalid URI for openAssetFile: $uri")
-        }
-
-        val segments = uri.pathSegments
-        if (segments.size < 3) {
-            throw IllegalArgumentException("Invalid path segments: $uri")
-        }
-
-        val packId = segments[1]
-        val fileName = segments[2]
+        val fileName = uri.lastPathSegment ?: throw FileNotFoundException("Invalid URI: $uri")
         val ctx = context ?: throw FileNotFoundException("Context is null")
+        val packId = if (uri.pathSegments.size >= 3) uri.pathSegments[1] else StickerManager.DEFAULT_PACK_ID
+
+        // Pre-flight check: if tray or clone file is requested and doesn't exist, generate immediately
+        if (fileName.contains("tray", ignoreCase = true)) {
+            val packInfo = StickerManager.getPackInfo(ctx, packId)
+            StickerManager.ensureTrayIcon(ctx, packId, packInfo.stickers.firstOrNull())
+        } else if (fileName.startsWith("auto_slot_", ignoreCase = true)) {
+            StickerManager.getEffectiveWhatsAppStickers(ctx, packId)
+        }
 
         val file = StickerManager.getStickerFile(ctx, packId, fileName)
         if (!file.exists()) {
-            Log.e(TAG, "File not found for WhatsApp: ${file.absolutePath}")
-            throw FileNotFoundException("Sticker file not found: $fileName")
+            Log.e(TAG, "File not found for WhatsApp: ${file.absolutePath}, uri=$uri")
+            throw FileNotFoundException("File not found: $fileName")
         }
 
         val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-        return AssetFileDescriptor(pfd, 0, AssetFileDescriptor.UNKNOWN_LENGTH)
+        // Return exact file length in AssetFileDescriptor so WhatsApp validator can verify byte size
+        return AssetFileDescriptor(pfd, 0, file.length())
     }
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
@@ -216,21 +181,14 @@ class StickerContentProvider : ContentProvider() {
     }
 
     override fun getType(uri: Uri): String? {
-        val code = MATCHER.match(uri)
-        val authority = context?.packageName + ".stickercontentprovider"
-        return when (code) {
-            METADATA -> "vnd.android.cursor.dir/vnd.$authority.metadata"
-            METADATA_PACK -> "vnd.android.cursor.item/vnd.$authority.metadata"
-            STICKERS -> "vnd.android.cursor.dir/vnd.$authority.stickers"
-            STICKERS_ASSET -> {
-                val fileName = uri.lastPathSegment ?: ""
-                if (fileName.endsWith(".png", ignoreCase = true)) {
-                    "image/png"
-                } else {
-                    "image/webp"
-                }
-            }
-            else -> null
+        val path = uri.path ?: ""
+        val fileName = uri.lastPathSegment ?: ""
+        return when {
+            path.contains("/metadata") -> "vnd.android.cursor.dir/vnd.${context?.packageName}.metadata"
+            path.startsWith("/stickers/") && !path.contains("stickers_asset") -> "vnd.android.cursor.dir/vnd.${context?.packageName}.stickers"
+            fileName.endsWith(".png", ignoreCase = true) -> "image/png"
+            fileName.endsWith(".webp", ignoreCase = true) -> "image/webp"
+            else -> "image/webp"
         }
     }
 
